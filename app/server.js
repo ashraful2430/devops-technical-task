@@ -28,6 +28,18 @@ const httpRequestCounter = new client.Counter({
 
 register.registerMetric(httpRequestCounter);
 
+const getReadableTimestamp = () => {
+  return new Date().toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+};
+
 app.get('/status', (req, res) => {
   httpRequestCounter.inc({
     method: 'GET',
@@ -40,7 +52,7 @@ app.get('/status', (req, res) => {
     status: 'ok',
     version: APP_VERSION,
     environment: NODE_ENV,
-    timestamp: new Date().toISOString(),
+    timestamp: getReadableTimestamp(),
     hostname: process.env.HOSTNAME || 'local',
   });
 });
@@ -74,7 +86,7 @@ app.post('/data', (req, res) => {
       name,
       value,
     },
-    timestamp: new Date().toISOString(),
+    timestamp: getReadableTimestamp(),
   });
 });
 
