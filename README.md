@@ -58,6 +58,8 @@ All components run as Docker containers orchestrated by Docker Compose on AWS EC
     │   ├── main.tf
     │   ├── variables.tf
     │   └── outputs.tf
+    ├── scripts/
+    │   └── fetch-secrets.sh
     ├── .github/
     │   └── workflows/
     │       └── ci.yml
@@ -76,6 +78,7 @@ The Dockerfile uses a three-stage build:
 - Stage 3 (production) — lean final image with no devDependencies
 
 Security practices applied:
+
 - Non-root user (appuser) so the container cannot write to system paths
 - npm ci --omit=dev so no test tooling ships in the production image
 - HEALTHCHECK so Docker automatically monitors container health
@@ -106,7 +109,7 @@ Job 1 — Test: installs Node.js 20, runs npm ci, runs all 6 Jest tests. Pipelin
 
 Job 2 — Build: runs the multi-stage Docker build to confirm the image builds cleanly.
 
-Job 3 — Deploy: SSHs into the EC2 server, pulls latest code, performs a rolling restart, reloads Nginx, and runs a smoke test against the live endpoint.
+Job 3 — Deploy: fetches secrets from AWS Secrets Manager, SSHs into the EC2 server, pulls latest code, performs a rolling restart, reloads Nginx, and runs a smoke test against the live endpoint.
 
 Pull requests trigger Jobs 1 and 2 only. Only merges to main trigger the full deploy.
 
@@ -116,12 +119,13 @@ Pull requests trigger Jobs 1 and 2 only. Only merges to main trigger the full de
 
 The deploy job restarts containers one at a time:
 
-1. Pull new code on the server
-2. Rebuild and restart app1 only
-3. Poll Docker health check until app1 returns healthy — Nginx keeps routing to app2 during this entire time
-4. Rebuild and restart app2 only
-5. Poll Docker health check until app2 returns healthy
-6. Run nginx -s reload which applies config in-place with zero dropped connections
+1. Fetch latest secrets from AWS Secrets Manager
+2. Pull new code on the server
+3. Rebuild and restart app1 only
+4. Poll Docker health check until app1 returns healthy — Nginx keeps routing to app2 during this entire time
+5. Rebuild and restart app2 only
+6. Poll Docker health check until app2 returns healthy
+7. Run nginx -s reload which applies config in-place with zero dropped connections
 
 At no point are both containers down simultaneously. If a container fails its health check the deploy aborts immediately and the previous version stays running. The /ready endpoint is what Nginx checks before routing any traffic to a newly started container.
 
@@ -149,7 +153,7 @@ Grafana reads from Prometheus and displays dashboards for CPU usage per instance
 - Provider: AWS EC2
 - Instance: t3.small, Ubuntu 22.04 LTS, us-east-1
 - Ports open: 22 (SSH), 80 (HTTP), 9090 (Prometheus), 3001 (Grafana)
-- Infrastructure provisioned with Terraform (see Bonus section)
+- Infrastructure provisioned with Terraform
 
 ---
 
@@ -161,9 +165,9 @@ Grafana reads from Prometheus and displays dashboards for CPU usage per instance
 | PORT | 3000 | Port the app listens on |
 | APP_VERSION | 1.0.0 | Version returned by /status |
 | INSTANCE_ID | unknown | Container identifier |
-| GRAFANA_PASSWORD | admin123 | Grafana admin password |
+| GRAFANA_PASSWORD | fetched from AWS Secrets Manager | Grafana admin password |
 
-Copy .env.example to .env and fill in values. Never commit .env to git.
+Copy .env.example to .env and fill in values. Never commit .env to git. In production the .env file is generated automatically by scripts/fetch-secrets.sh at deploy time.
 
 ---
 
@@ -210,10 +214,45 @@ Resources Terraform creates: VPC, public subnet, internet gateway, route table, 
 
 The EC2 user_data bootstrap script automatically installs Docker, clones the repository, creates the .env file, and starts the full Docker Compose stack on first boot — no manual server setup needed.
 
-Security approach: IAM Instance Profile is used instead of hardcoded AWS credentials so no secrets are stored on disk. EC2 storage is encrypted at rest. Terraform state files are excluded from git.
-
     cd terraform
     terraform init
     terraform plan
     terraform apply
     terraform destroy
+
+Security approach: IAM Instance Profile is used instead of hardcoded AWS credentials so no secrets are stored on disk. EC2 storage is encrypted at rest. Terraform state files are excluded from git.
+
+---
+
+## Bonus 3 — Secrets and Security Management
+
+All secrets are stored in AWS Secrets Manager and fetched at deploy time. No credentials are hardcoded anywhere in the codebase.
+
+### How it works
+
+The script scripts/fetch-secrets.sh runs at the start of every deploy. It calls AWS Secrets Manager using the server's IAM role — no access keys required — and writes the values to a local .env file that is never committed to git.
+
+    Secret name: devops-api/production
+    Region: us-east-1
+    Fetched values: NODE_ENV, APP_VERSION, GRAFANA_PASSWORD
+
+### Security practices applied
+
+- No hardcoded credentials anywhere in code, scripts, or config files
+- .env is in .gitignore and never committed
+- AWS Secrets Manager encrypts all secrets at rest automatically
+- IAM Instance Profile used instead of AWS access keys — the server authenticates via its role, not stored credentials
+- Non-root container user (appuser) in every app container
+- EC2 root volume encrypted at rest via Terraform
+- Terraform state files excluded from git via .gitignore
+- GitHub Actions secrets used for SSH key and server IP — never appear in logs
+- Shell history cleared after any sensitive command
+
+### To update a secret
+
+    aws secretsmanager update-secret \
+      --secret-id devops-api/production \
+      --secret-string '{"GRAFANA_PASSWORD":"newpassword","APP_VERSION":"1.0.0","NODE_ENV":"production"}' \
+      --region us-east-1
+
+The next deploy automatically picks up the new value — no code changes needed.
