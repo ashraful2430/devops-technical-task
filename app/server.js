@@ -68,6 +68,7 @@ app.get('/status', (req, res) => {
     environment: NODE_ENV,
     timestamp: getReadableTimestamp(),
     hostname: process.env.HOSTNAME || 'local',
+    instanceId: process.env.INSTANCE_ID || 'unknown',  
   });
 });
 
@@ -126,6 +127,6 @@ const shutdown = (signal) => {
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app;
