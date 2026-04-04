@@ -1,313 +1,219 @@
 # DevOps Technical Task — Production API System
 
-A production-style system demonstrating containerization, CI/CD automation, traffic management, and observability.
-
-Built with:
-
-* Node.js (API)
-* Docker (containerization)
-* Nginx (reverse proxy + load balancing)
-* Prometheus + Grafana (monitoring)
-* GitHub Actions (CI/CD)
-* AWS EC2 (deployment)
+A production-style system demonstrating containerization, CI/CD automation, traffic management, and observability. Built with Node.js, Docker, Nginx, Prometheus, Grafana, GitHub Actions, deployed on AWS EC2 with Kubernetes EKS and Terraform.
 
 ---
 
 ## System Architecture
 
-```
-Internet
-    │
-    │ HTTP :80
-    ▼
- Nginx (Reverse Proxy + Load Balancer)
-    │
-    │ least_conn load balancing
-    ├─────────────────────┐
-    ▼                     ▼
-app1 (Node.js :3000)  app2 (Node.js :3000)
-    │                     │
-    └──────────┬──────────┘
-               │ /metrics scrape every 15s
-               ▼
-          Prometheus :9090
-               │
-               ▼
-          Grafana :3001
-```
+All components run as Docker containers orchestrated by Docker Compose on AWS EC2. Nginx is the only public entry point — app containers are not exposed directly.
 
-All components run as Docker containers using Docker Compose on a single EC2 instance.
+    Internet
+        │
+        ▼
+    Nginx :80 (Reverse Proxy + Load Balancer)
+        │
+        ├─────────────────────┐
+        ▼                     ▼
+    app1 :3000            app2 :3000
+        │                     │
+        └──────────┬──────────┘
+                   ▼
+            Prometheus :9090
+                   ▼
+            Grafana :3001
 
 ---
 
 ## API Endpoints
 
-| Method | Path     | Description                 |
-| ------ | -------- | --------------------------- |
-| GET    | /status  | Service status and metadata |
-| POST   | /data    | Accepts JSON payload        |
-| GET    | /healthz | Liveness check              |
-| GET    | /ready   | Readiness check             |
-| GET    | /metrics | Prometheus metrics endpoint |
-
----
-
-### GET /status
-
-```
-curl http://YOUR_SERVER_IP/status
-```
-
----
-
-### POST /data
-
-```
-curl -X POST http://YOUR_SERVER_IP/data \
-  -H "Content-Type: application/json" \
-  -d '{"name": "test", "value": 123}'
-```
-
----
-
-## How the System Handles ~100 Requests/Second
-
-The system achieves this using:
-
-### 1. Horizontal Scaling
-
-Two Node.js containers (`app1`, `app2`) run in parallel.
-
-* Each instance handles requests independently
-* Combined throughput increases linearly
-* Easily scalable by adding more containers
-
-### 2. Nginx Load Balancing (least_conn)
-
-* Routes requests to the least busy server
-* Prevents uneven load distribution
-* Better than round-robin for variable workloads
-
-### 3. Persistent Connections (keepalive)
-
-* Reuses TCP connections
-* Reduces latency
-* Improves throughput under high load
-
-### 4. Non-blocking Node.js Runtime
-
-* Uses event-driven architecture
-* Handles concurrent requests efficiently
-* No thread overhead
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /status | Service health, version, instance info |
+| POST | /data | Accepts JSON payload, echoes back with metadata |
+| GET | /healthz | Liveness probe for Docker and Nginx |
+| GET | /ready | Readiness probe for zero-downtime deploy |
+| GET | /metrics | Prometheus scrape endpoint |
 
 ---
 
 ## Project Structure
 
-```
-devops-technical-task/
-├── app/
-│   └── server.js
-├── tests/
-│   └── app.test.js
-├── nginx/
-│   └── nginx.conf
-├── monitoring/
-│   └── prometheus/
-│       └── prometheus.yml
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── Dockerfile
-├── docker-compose.yml
-├── package.json
-└── .env.example
-```
+    devops-technical-task/
+    ├── app/
+    │   └── server.js
+    ├── tests/
+    │   └── app.test.js
+    ├── nginx/
+    │   └── nginx.conf
+    ├── monitoring/
+    │   └── prometheus/
+    │       └── prometheus.yml
+    ├── k8s/
+    │   ├── deployment.yml
+    │   ├── service.yml
+    │   ├── configmap.yml
+    │   └── hpa.yml
+    ├── terraform/
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    ├── .github/
+    │   └── workflows/
+    │       └── ci.yml
+    ├── Dockerfile
+    ├── docker-compose.yml
+    └── package.json
 
 ---
 
-## Containerization
+## Containerization Approach
 
-Multi-stage Dockerfile:
+The Dockerfile uses a three-stage build:
 
-* deps → install dependencies
-* test → run tests
-* production → lightweight production image
+- Stage 1 (deps) — installs all npm packages, cached for faster rebuilds
+- Stage 2 (test) — runs Jest test suite, build fails if any test fails
+- Stage 3 (production) — lean final image with no devDependencies
 
-Key Features:
-
-* Non-root container user
-* Health checks enabled
-* Only production dependencies included
-* Graceful shutdown support
-
----
-
-## Running Locally
-
-```
-git clone <your-repo-url>
-cd devops-technical-task
-
-npm install
-npm test
-
-docker compose up --build
-```
-
-Access:
-
-* API → http://localhost/status
-* Grafana → http://localhost:3001
-* Prometheus → http://localhost:9090
+Security practices applied:
+- Non-root user (appuser) so the container cannot write to system paths
+- npm ci --omit=dev so no test tooling ships in the production image
+- HEALTHCHECK so Docker automatically monitors container health
+- Exec form CMD so the process receives SIGTERM for graceful shutdown
+- Environment variables declared via ENV with no hardcoded values
 
 ---
 
-## CI/CD Pipeline
+## How the System Handles ~100 Requests/Second
 
-Pipeline file:
+Four layers work together:
 
-```
-.github/workflows/ci.yml
-```
+1. Horizontal scaling — two Node.js containers run in parallel. Each handles ~50-80 req/s giving ~100-160 req/s combined. Adding more instances in docker-compose.yml scales this further with no code changes.
 
-Flow:
+2. Nginx least_conn load balancing — routes each request to whichever upstream has the fewest active connections. Better than round-robin for variable workloads.
 
-```
-Push to main
-   ↓
-Run tests
-   ↓
-Build Docker image
-   ↓
-Deploy to EC2
-```
+3. Nginx keepalive connections — keepalive 32 maintains persistent TCP connections to each upstream container, eliminating handshake overhead at high concurrency.
 
-CI:
+4. Node.js non-blocking I/O — Express handles concurrent requests via the event loop without spawning threads, efficient for this API workload.
 
-* Install dependencies
-* Run tests
-* Fail if tests fail
+---
 
-CD:
+## Deployment Process
 
-* SSH into server using GitHub Secrets
-* Pull latest code
-* Rolling update (app1 → app2)
-* Reload Nginx
-* Smoke test
+The CI/CD pipeline runs automatically on every push to main via GitHub Actions in three jobs:
+
+Job 1 — Test: installs Node.js 20, runs npm ci, runs all 6 Jest tests. Pipeline stops here if any test fails.
+
+Job 2 — Build: runs the multi-stage Docker build to confirm the image builds cleanly.
+
+Job 3 — Deploy: SSHs into the EC2 server, pulls latest code, performs a rolling restart, reloads Nginx, and runs a smoke test against the live endpoint.
+
+Pull requests trigger Jobs 1 and 2 only. Only merges to main trigger the full deploy.
 
 ---
 
 ## Zero-Downtime Deployment
 
-```
-1. Update app1
-2. Wait for health check
-3. Update app2
-4. Wait for health check
-5. Reload Nginx
-```
+The deploy job restarts containers one at a time:
 
-Why it works:
+1. Pull new code on the server
+2. Rebuild and restart app1 only
+3. Poll Docker health check until app1 returns healthy — Nginx keeps routing to app2 during this entire time
+4. Rebuild and restart app2 only
+5. Poll Docker health check until app2 returns healthy
+6. Run nginx -s reload which applies config in-place with zero dropped connections
 
-* At least one instance is always running
-* No traffic interruption
-* Health checks prevent bad deploy
+At no point are both containers down simultaneously. If a container fails its health check the deploy aborts immediately and the previous version stays running. The /ready endpoint is what Nginx checks before routing any traffic to a newly started container.
 
 ---
 
-## Monitoring & Logging
+## Logging and Monitoring Setup
 
-Logs:
+### Logs
 
-```
-docker compose logs -f
-```
+Every request produces a structured log line via Morgan showing method, path, status code, response time, and container hostname. View logs with:
 
-Metrics available at:
+    docker compose logs -f app1
+    docker compose logs -f
 
-```
-/metrics
-```
+### Metrics
 
-Collected data:
+The /metrics endpoint on each container exposes Prometheus metrics including http_requests_total, http_request_duration_seconds, process CPU, and heap memory usage. Prometheus scrapes both instances every 15 seconds automatically.
 
-* request count
-* request duration
-* CPU usage
-* memory usage
-
-Prometheus:
-
-```
-http://YOUR_SERVER_IP:9090
-```
-
-Grafana:
-
-```
-http://YOUR_SERVER_IP:3001
-```
-
-Login:
-
-* user: admin
-* pass: admin123
+Grafana reads from Prometheus and displays dashboards for CPU usage per instance, event loop lag, memory usage, active requests, and process restart count. Dashboard used: Node.js Application Dashboard (Grafana ID 11159).
 
 ---
 
-## Cloud Deployment (AWS EC2)
+## Cloud Deployment
 
-Setup:
-
-```
-curl -fsSL https://get.docker.com -o get-docker.sh
-sh get-docker.sh
-
-git clone <your-repo>
-cd devops-technical-task
-
-docker compose up -d --build
-```
-
-Open Ports:
-
-* 22 → SSH
-* 80 → API
-* 9090 → Prometheus
-* 3001 → Grafana
-
-Live URLs:
-
-```
-http://YOUR_SERVER_IP/status
-http://YOUR_SERVER_IP/data
-http://YOUR_SERVER_IP:9090
-http://YOUR_SERVER_IP:3001
-```
+- Provider: AWS EC2
+- Instance: t3.small, Ubuntu 22.04 LTS, us-east-1
+- Ports open: 22 (SSH), 80 (HTTP), 9090 (Prometheus), 3001 (Grafana)
+- Infrastructure provisioned with Terraform (see Bonus section)
 
 ---
 
 ## Environment Variables
 
-| Variable         | Description      |
-| ---------------- | ---------------- |
-| NODE_ENV         | Environment mode |
-| PORT             | App port         |
-| APP_VERSION      | Version          |
-| INSTANCE_ID      | Container ID     |
-| GRAFANA_PASSWORD | Grafana password |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| NODE_ENV | production | Runtime environment |
+| PORT | 3000 | Port the app listens on |
+| APP_VERSION | 1.0.0 | Version returned by /status |
+| INSTANCE_ID | unknown | Container identifier |
+| GRAFANA_PASSWORD | admin123 | Grafana admin password |
+
+Copy .env.example to .env and fill in values. Never commit .env to git.
 
 ---
 
-## Summary
+## Bonus 1 — Kubernetes on AWS EKS
 
-This project demonstrates:
+The API is also deployed on AWS EKS running Kubernetes 1.34 with two t3.small worker nodes created via eksctl.
 
-* Scalable API architecture
-* Containerized deployment
-* Load balancing with Nginx
-* CI/CD automation with GitHub Actions
-* Zero-downtime deployment
-* Monitoring with Prometheus & Grafana
+Manifest files:
+
+| File | Purpose |
+|------|---------|
+| k8s/deployment.yml | Runs 2 pods with rolling update strategy |
+| k8s/service.yml | AWS Load Balancer routing traffic to pods |
+| k8s/configmap.yml | Environment variables injected into pods |
+| k8s/hpa.yml | Autoscales pods when CPU exceeds 60% |
+
+Rolling update is configured with maxUnavailable 0 and maxSurge 1 — Kubernetes never terminates a pod before its replacement is healthy. HPA automatically scales between 2 and 5 pods based on CPU utilization.
+
+Deploy commands:
+
+    kubectl apply -f k8s/configmap.yml
+    kubectl apply -f k8s/deployment.yml
+    kubectl apply -f k8s/service.yml
+    kubectl apply -f k8s/hpa.yml
+
+Rolling update:
+
+    kubectl set image deployment/devops-api api=ashik6251/devops-api:latest
+    kubectl rollout status deployment/devops-api
+    kubectl rollout undo deployment/devops-api
+
+Horizontal scaling:
+
+    kubectl scale deployment devops-api --replicas=3
+    kubectl get hpa
+
+---
+
+## Bonus 2 — Terraform Infrastructure as Code
+
+The entire AWS infrastructure is defined as code in the terraform/ folder. No manual clicking through the AWS console required.
+
+Resources Terraform creates: VPC, public subnet, internet gateway, route table, security group, EC2 instance, and Elastic IP.
+
+The EC2 user_data bootstrap script automatically installs Docker, clones the repository, creates the .env file, and starts the full Docker Compose stack on first boot — no manual server setup needed.
+
+Security approach: IAM Instance Profile is used instead of hardcoded AWS credentials so no secrets are stored on disk. EC2 storage is encrypted at rest. Terraform state files are excluded from git.
+
+    cd terraform
+    terraform init
+    terraform plan
+    terraform apply
+    terraform destroy
