@@ -17,6 +17,13 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
+# Environment variable configuration (overridable at runtime)
+ENV NODE_ENV=production \
+    PORT=3000 \
+    APP_VERSION=1.0.0 \
+    LOG_LEVEL=info
+
+
 # Install only production dependencies
 COPY package*.json ./
 RUN npm ci --omit=dev --prefer-offline && npm cache clean --force
