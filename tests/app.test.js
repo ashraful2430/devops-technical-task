@@ -2,6 +2,7 @@ const request = require('supertest');
 const app = require('../app/server');
 
 describe('API endpoints', () => {
+
   it('GET /status should return 200', async () => {
     const res = await request(app).get('/status');
     expect(res.statusCode).toBe(200);
@@ -13,7 +14,6 @@ describe('API endpoints', () => {
     const res = await request(app)
       .post('/data')
       .send({ name: 'test', value: 123 });
-
     expect(res.statusCode).toBe(201);
     expect(res.body.success).toBe(true);
   });
@@ -22,8 +22,26 @@ describe('API endpoints', () => {
     const res = await request(app)
       .post('/data')
       .send({ name: 'only-name' });
-
     expect(res.statusCode).toBe(400);
     expect(res.body.success).toBe(false);
   });
+
+  it('GET /healthz should return 200', async () => {
+    const res = await request(app).get('/healthz');
+    expect(res.statusCode).toBe(200);
+    expect(res.text).toBe('healthy');
+  });
+
+  it('GET /ready should return 200 with ready true', async () => {
+    const res = await request(app).get('/ready');
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ready).toBe(true);
+  });
+
+  it('GET /metrics should return prometheus data', async () => {
+    const res = await request(app).get('/metrics');
+    expect(res.statusCode).toBe(200);
+    expect(res.text).toContain('http_requests_total');
+  });
+
 });
